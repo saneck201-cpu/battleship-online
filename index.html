@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Морской бой на 9</title>
+<style>
+:root{--bg:#0b1220;--card:#131c2e;--line:#243049;--tx:#e6edf7;--mut:#8a98b3;--pri:#3b82f6;--ok:#22c55e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;justify-content:center}
+#app{width:100%;max-width:600px;padding:12px;padding-bottom:48px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+h1{margin:0 0 12px;font-size:24px}
+h1 small{display:block;font-size:13px;color:var(--mut);font-weight:400}
+input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#0e1626;color:var(--tx);font-size:16px;margin-bottom:10px}
+.btn{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);background:#1b2740;color:var(--tx);font-size:16px;font-weight:600;margin-bottom:8px;cursor:pointer}
+.btn.pri{background:var(--pri);border-color:var(--pri)}
+.btn:disabled{opacity:.4}
+.row{display:flex;gap:8px}.row .btn{flex:1}
+.or{text-align:center;color:var(--mut);margin:4px 0 10px}
+.code{font-size:46px;letter-spacing:8px;text-align:center;font-weight:800;margin:4px 0 8px}
+.mut{color:var(--mut);font-size:14px}
+.err{color:#f87171;min-height:1.2em;margin:4px 0 0}
+.pl{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.pl:last-child{border-bottom:0}
+.dot{width:14px;height:14px;border-radius:50%;flex:none;display:inline-block}
+.grid{display:grid;grid-template-columns:16px repeat(15,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;user-select:none;touch-action:manipulation}
+.lb{background:#0e1626;color:var(--mut);font-size:9px;font-style:normal;display:flex;align-items:center;justify-content:center}
+.lb.t{height:14px}
+.c{aspect-ratio:1;background:#16233b;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;line-height:1}
+.c.ok{cursor:pointer}
+.c.ok:active{background:#2a4170}
+.c.mine{box-shadow:inset 0 0 0 2px var(--me)}
+.c.ship{background:var(--me)}
+.c.miss{color:#5d6d8c}
+.c.last{outline:2px solid #fff;outline-offset:-2px}
+.banner{padding:12px 14px;border-radius:12px;font-weight:700;margin-bottom:10px;background:#1b2740;border:1px solid var(--line)}
+.banner.me{background:#14532d;border-color:#16a34a}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.chip{display:flex;align-items:center;gap:6px;padding:4px 9px;border-radius:99px;background:#1b2740;border:1px solid var(--line);font-size:13px}
+.chip.turn{border-color:#fff;box-shadow:0 0 0 1px #fff}
+.chip.dead{opacity:.4;text-decoration:line-through}
+.log{font-size:14px;color:var(--mut);margin-top:10px}
+.log div{padding:2px 0}.log div:first-child{color:var(--tx)}
+.tray{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.sh{display:flex;gap:2px;padding:4px;border-radius:6px;border:1px solid var(--line)}
+.sh.cur{border-color:#fff}.sh.done{opacity:.3}
+.sh i{width:14px;height:14px;background:var(--me);border-radius:3px;display:block}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#000;color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;z-index:9;max-width:90%}
+label.chk{display:flex;gap:10px;align-items:center;margin:10px 0}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+'use strict';
+// ====== настройки ======
+const SIZE = 15;                       // поле 15x15
+const FLEET = [4, 3, 3, 2, 2, 1];      // корабли каждого игрока
+const MAXP = 9;
+const COLORS = ['#ef4444','#f59e0b','#eab308','#22c55e','#14b8a6','#3b82f6','#8b5cf6','#ec4899','#94a3b8'];
+const PREFIX = 'mbj9-';
+const LETTERS = 'ABCDEFGHIJKLMNO';
+
+const app = document.getElementById('app');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const coord = i => LETTERS[i % SIZE] + (Math.floor(i / SIZE) + 1);
+
+let screen = 'home';      // home | game | dead
+let role = null;          // host | client
+let peer = null, conn = null;
+let code = '';
+let pub = null;           // публичное состояние
+let myId = null;
+let placing = { ships: FLEET.map(() => null), dir: 'h' };
+let homeMsg = '';
+let busy = false;
+
+// ====== утилиты ======
+function toast(t) {
+  const d = document.createElement('div');
+  d.className = 'toast'; d.textContent = t;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 2500);
+}
+function getName() {
+  const el = document.getElementById('name');
+  const v = ((el && el.value) || localStorage.getItem('mb9name') || '').trim() || 'Игрок';
+  try { localStorage.setItem('mb9name', v); } catch (e) {}
+  return v;
+}
+function send(m) {
+  if (role === 'host') hostHandle(0, m);
+  else if (conn && conn.open) conn.send(m);
+}
+
+// ====== ХОСТ (вся логика и секретные данные только тут) ======
+let H = null;
+function hostInit() {
+  H = { phase: 'lobby', players: [], turn: -1, shots: {}, last: -1, log: [], winner: null, bonus: true, nextId: 0 };
+}
+const pname = id => { const p = H.players.find(p => p.id === id); return p ? p.name : '?'; };
+function hlog(t) { H.log.push(t); if (H.log.length > 30) H.log.shift(); }
+
+function addPlayer(name, c) {
+  const used = new Set(H.players.map(p => p.color));
+  const color = COLORS.find(x => !used.has(x)) || COLORS[0];
+  const p = { id: H.nextId++, name: String(name || 'Игрок').slice(0, 14), color, conn: c, ready: false, ships: [], alive: true, gone: false };
+  H.players.push(p);
+  return p;
+}
+
+function validate(arr) {
+  if (!Array.isArray(arr) || arr.length !== FLEET.length) return null;
+  const lens = arr.map(a => Array.isArray(a) ? a.length : -1).sort((a, b) => b - a);
+  if (lens.join() !== [...FLEET].sort((a, b) => b - a).join()) return null;
+  const seen = new Set(), out = [];
+  for (const a of arr) {
+    const c = a.map(Number).sort((x, y) => x - y);
+    if (c.some(v => !Number.isInteger(v) || v < 0 || v >= SIZE * SIZE)) return null;
+    const xs = c.map(v => v % SIZE), ys = c.map(v => Math.floor(v / SIZE));
+    const horiz = ys.every(y => y === ys[0]) && xs.every((x, i) => x === xs[0] + i);
+    const vert = xs.every(x => x === xs[0]) && ys.every((y, i) => y === ys[0] + i);
+    if (!horiz && !vert) return null;
+    for (const v of c) { if (seen.has(v)) return null; seen.add(v); }
+    out.push(c);
+  }
+  return out;
+}
+
+function connected() { return H.players.filter(p => !p.gone); }
+
+function checkWin() {
+  if (H.phase !== 'playing' && H.phase !== 'placing') return false;
+  const alive = H.players.filter(p => p.alive && !p.gone);
+  if (alive.length <= 1) {
+    H.phase = 'over';
+    H.winner = alive.length ? alive[0].id : null;
+    hlog(alive.length ? `🏆 Победил ${alive[0].name}` : 'Игра окончена');
+    return true;
+  }
+  return false;
+}
+
+function checkAllReady() {
+  if (H.phase !== 'placing') return;
+  const c = connected();
+  if (c.length >= 2 && c.every(p => p.ready)) {
+    H.phase = 'playing';
+    const alive = c.filter(p => p.alive);
+    H.turn = alive[Math.floor(Math.random() * alive.length)].id;
+    hlog(`Бой начался! Первым ходит ${pname(H.turn)}`);
+  }
+}
+
+function advance(stay) {
+  if (stay) return;
+  const n = H.players.length;
+  const i = H.players.findIndex(p => p.id === H.turn);
+  for (let k = 1; k <= n; k++) {
+    const q = H.players[(i + k) % n];
+    if (q.alive && !q.gone) { H.turn = q.id; return; }
+  }
+}
+
+function hostHandle(pid, m) {
+  const p = H.players.find(x => x.id === pid);
+  if (!p || !m) return;
+  const err = t => { if (p.conn) p.conn.send({ t: 'err', msg: t }); else toast(t); };
+
+  switch (m.t) {
+    case 'bonus':
+      if (pid === 0 && H.phase === 'lobby') H.bonus = !!m.v;
+      break;
+    case 'start':
+      if (pid !== 0 || H.phase !== 'lobby') return;
+      if (H.players.length < 2) return err('Нужно минимум 2 игрока');
+      H.phase = 'placing';
+      H.log = [];
+      hlog('Расставляйте корабли');
+      break;
+    case 'ready': {
+      if (H.phase !== 'placing' || p.ready) return;
+      const ships = validate(m.ships);
+      if (!ships) return err('Неверная расстановка');
+      p.ships = ships.map(c => ({ cells: c, hit: 0 }));
+      p.ready = true;
+      checkAllReady();
+      break;
+    }
+    case 'shoot': {
+      if (H.phase !== 'playing' || pid !== H.turn) return;
+      const cell = Number(m.cell);
+      if (!Number.isInteger(cell) || cell < 0 || cell >= SIZE * SIZE || H.shots[cell]) return;
+      if (p.ships.some(s => s.cells.includes(cell))) return err('Это твой корабль');
+      const owners = [], sunk = [];
+      for (const q of H.players) {
+        for (const s of q.ships) {
+          if (s.cells.includes(cell)) {
+            s.hit++;
+            owners.push(q.id);
+            if (s.hit === s.cells.length) sunk.push([q.id, s.cells.length]);
+          }
+        }
+      }
+      H.shots[cell] = { by: pid, o: owners };
+      H.last = cell;
+      if (!owners.length) hlog(`${p.name}: ${coord(cell)} — мимо`);
+      else {
+        hlog(`${p.name}: ${coord(cell)} — попал в ${owners.map(pname).join(', ')}`);
+        for (const [id, len] of sunk) hlog(`💥 Потоплен ${len}-палубник игрока ${pname(id)}`);
+      }
+      for (const q of H.players) {
+        if (q.alive && q.ships.length && q.ships.every(s => s.hit === s.cells.length)) {
+          q.alive = false; hlog(`☠ ${q.name} выбыл`);
+        }
+      }
+      if (!checkWin()) advance(owners.length > 0 && H.bonus && p.alive);
+      break;
+    }
+    case 'again':
+      if (pid !== 0 || H.phase !== 'over') return;
+      H.players = H.players.filter(q => !q.gone);
+      for (const q of H.players) { q.ships = []; q.ready = false; q.alive = true; }
+      H.shots = {}; H.last = -1; H.log = []; H.winner = null; H.turn = -1; H.phase = 'lobby';
+      break;
+    default: return;
+  }
+  broadcast();
+}
+
+function onLeave(pid) {
+  const i = H.players.findIndex(p => p.id === pid);
+  if (i < 0) return;
+  const p = H.players[i];
+  if (H.phase === 'lobby') H.players.splice(i, 1);
+  else {
+    p.gone = true; p.alive = false;
+    hlog(`${p.name} отключился`);
+    if (!checkWin()) {
+      if (H.phase === 'placing') checkAllReady();
+      else if (H.phase === 'playing' && H.turn === pid) advance(false);
+    }
+  }
+  broadcast();
+}
+
+function publicState() {
+  return {
+    phase: H.phase, turn: H.turn, shots: H.shots, last: H.last,
+    log: H.log.slice(-8), winner: H.winner, bonus: H.bonus, code,
+    players: H.players.map(p => ({
+      id: p.id, name: p.name, color: p.color, ready: p.ready, alive: p.alive, gone: p.gone,
+      left: p.ships.filter(s => s.hit < s.cells.length).length, total: p.ships.length
+    }))
+  };
+}
+
+function broadcast() {
+  const s = publicState();
+  for (const p of H.players) if (p.conn && p.conn.open) p.conn.send({ t: 'state', s, you: p.id });
+  onState(s, 0);
+}
+
+// ====== сеть ======
+function randCode() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c = ''; for (let i = 0; i < 4; i++) c += A[Math.floor(Math.random() * A.length)];
+  return c;
+}
+
+function createRoom() {
+  const name = getName();
+  busy = true; homeMsg = ''; render();
+  const tryMake = (attempt) => {
+    code = randCode();
+    peer = new Peer(PREFIX + code);
+    peer.on('open', () => {
+      role = 'host'; hostInit();
+      addPlayer(name, null);
+      peer.on('connection', c => {
+        c.on('data', d => {
+          if (c._pid == null) {
+            if (!d || d.t !== 'join') return;
+            if (H.phase !== 'lobby') { c.send({ t: 'err', msg: 'Игра уже идёт' }); return; }
+            if (H.players.length >= MAXP) { c.send({ t: 'err', msg: 'Комната заполнена (9)' }); return; }
+            const p = addPlayer(d.name, c);
+            c._pid = p.id;
+            broadcast();
+          } else hostHandle(c._pid, d);
+        });
+        c.on('close', () => { if (c._pid != null) onLeave(c._pid); });
+      });
+      busy = false; screen = 'game';
+      broadcast();
+    });
+    peer.on('error', e => {
+      if (e.type === 'unavailable-id' && attempt < 5) { peer.destroy(); tryMake(attempt + 1); return; }
+      busy = false; homeMsg = 'Не удалось создать комнату: ' + (e.type || e.message); render();
+    });
+  };
+  tryMake(0);
+}
+
+function joinRoom() {
+  const name = getName();
+  const c = (document.getElementById('code').value || '').trim().toUpperCase();
+  if (c.length !== 4) { homeMsg = 'Введи 4-символьный код'; render(); return; }
+  code = c; busy = true; homeMsg = ''; render();
+  let done = false;
+  const fail = t => { if (done) return; done = true; busy = false; homeMsg = t; try { peer.destroy(); } catch (e) {} render(); };
+  peer = new Peer();
+  peer.on('error', e => fail(e.type === 'peer-unavailable' ? 'Комната не найдена' : 'Ошибка сети: ' + (e.type || e.message)));
+  peer.on('open', () => {
+    conn = peer.connect(PREFIX + code, { reliable: true });
+    setTimeout(() => { if (!done && !(conn && conn.open)) fail('Не получилось соединиться (попробуй другую сеть/Wi-Fi)'); }, 12000);
+    conn.on('open', () => {
+      done = true; role = 'client'; busy = false;
+      conn.send({ t: 'join', name });
+    });
+    conn.on('data', d => {
+      if (d.t === 'state') { screen = 'game'; onState(d.s, d.you); }
+      else if (d.t === 'err') {
+        toast(d.msg);
+        if (screen !== 'game') { homeMsg = d.msg; render(); }
+      }
+    });
+    conn.on('close', () => { if (role === 'client') { screen = 'dead'; render(); } });
+  });
+}
+
+// ====== клиентская часть ======
+function onState(s, you) {
+  const prev = pub;
+  myId = you;
+  if (prev && prev.phase !== 'lobby' && s.phase === 'lobby') placing = { ships: FLEET.map(() => null), dir: 'h' };
+  if (s.phase === 'playing' && s.turn === myId && (!prev || prev.turn !== myId || prev.phase !== 'playing')) {
+    try { navigator.vibrate && navigator.vibrate(250); } catch (e) {}
+  }
+  pub = s;
+  document.title = (s.phase === 'playing' && s.turn === myId) ? '🎯 Твой ход!' : 'Морской бой на 9';
+  render();
+}
+
+const me = () => pub && pub.players.find(p => p.id === myId);
+const colorOf = id => { const p = pub.players.find(p => p.id === id); return p ? p.color : '#888'; };
+const nameOf = id => { const p = pub.players.find(p => p.id === id); return p ? p.name : '?'; };
+const myCells = () => new Set(placing.ships.filter(Boolean).flat());
+
+// расстановка
+function shipCells(len, x, y, dir) {
+  const c = [];
+  for (let k = 0; k < len; k++) {
+    const xx = dir === 'h' ? x + k : x, yy = dir === 'v' ? y + k : y;
+    if (xx >= SIZE || yy >= SIZE) return null;
+    c.push(yy * SIZE + xx);
+  }
+  return c;
+}
+function placeAt(i) {
+  const occ = myCells();
+  const idx = placing.ships.findIndex(s => s && s.includes(i));
+  if (idx >= 0) { placing.ships[idx] = null; render(); return; }
+  const cur = placing.ships.findIndex(s => !s);
+  if (cur < 0) return;
+  const cells = shipCells(FLEET[cur], i % SIZE, Math.floor(i / SIZE), placing.dir);
+  if (!cells || cells.some(c => occ.has(c))) { toast('Сюда не влезает'); return; }
+  placing.ships[cur] = cells;
+  render();
+}
+function randomPlace() {
+  for (let tries = 0; tries < 200; tries++) {
+    const occ = new Set(), res = [];
+    let ok = true;
+    for (const len of FLEET) {
+      let placed = false;
+      for (let t = 0; t < 100 && !placed; t++) {
+        const dir = Math.random() < .5 ? 'h' : 'v';
+        const cells = shipCells(len, Math.floor(Math.random() * SIZE), Math.floor(Math.random() * SIZE), dir);
+        if (cells && !cells.some(c => occ.has(c))) { cells.forEach(c => occ.add(c)); res.push(cells); placed = true; }
+      }
+      if (!placed) { ok = false; break; }
+    }
+    if (ok) { placing.ships = res; render(); return; }
+  }
+}
+
+// ====== отрисовка ======
+function board(mode) {
+  const mine = myCells();
+  const mc = me() ? me().color : '#fff';
+  const canShoot = mode === 'play' && pub.phase === 'playing' && pub.turn === myId;
+  let h = `<div class="grid" style="--me:${mc}"><i class="lb t"></i>`;
+  for (let x = 0; x < SIZE; x++) h += `<i class="lb t">${LETTERS[x]}</i>`;
+  for (let y = 0; y < SIZE; y++) {
+    h += `<i class="lb">${y + 1}</i>`;
+    for (let x = 0; x < SIZE; x++) {
+      const i = y * SIZE + x;
+      let cls = 'c', st = '', inner = '', act = '';
+      if (mode === 'place') {
+        if (mine.has(i)) cls += ' ship';
+        if (!me().ready) { cls += ' ok'; act = `data-a="pcell" data-i="${i}"`; }
+      } else {
+        if (mine.has(i)) cls += ' mine';
+        const sh = pub.shots[i];
+        if (sh) {
+          if (sh.o.length) { cls += ' hit'; st = `background:${colorOf(sh.o[0])}`; inner = '✕'; }
+          else { cls += ' miss'; inner = '•'; }
+          if (pub.last === i) cls += ' last';
+        } else if (canShoot && !mine.has(i)) { cls += ' ok'; act = `data-a="shoot" data-i="${i}"`; }
+      }
+      h += `<div class="${cls}" style="${st}" ${act}>${inner}</div>`;
+    }
+  }
+  return h + '</div>';
+}
+
+function playersList(withReady) {
+  return pub.players.map(p => `<div class="pl"><span class="dot" style="background:${p.color}"></span>
+    <b>${esc(p.name)}</b>${p.id === myId ? ' <span class="mut">(ты)</span>' : ''}${p.id === 0 ? ' <span class="mut">👑</span>' : ''}
+    ${withReady ? `<span style="margin-left:auto">${p.gone ? '❌' : p.ready ? '✅' : '⏳'}</span>` : ''}</div>`).join('');
+}
+
+function renderHome() {
+  const q = new URLSearchParams(location.search).get('room') || '';
+  const saved = localStorage.getItem('mb9name') || '';
+  app.innerHTML = `<div class="card"><h1>⚓ Морской бой<small>до 9 игроков • у каждого свой экран</small></h1>
+    <input type="text" id="name" placeholder="Твоё имя" maxlength="14" value="${esc(saved)}">
+    <button class="btn pri" data-a="create" ${busy ? 'disabled' : ''}>Создать комнату</button>
+    <div class="or">или</div>
+    <input type="text" id="code" placeholder="Код комнаты" maxlength="4" value="${esc(q.toUpperCase())}" style="text-transform:uppercase;text-align:center;letter-spacing:6px">
+    <button class="btn" data-a="join" ${busy ? 'disabled' : ''}>Войти</button>
+    <p class="err">${busy ? '⏳ Подключаюсь…' : esc(homeMsg)}</p></div>`;
+}
+
+function renderLobby() {
+  const host = myId === 0;
+  const link = location.origin + location.pathname + '?room=' + pub.code;
+  app.innerHTML = `<div class="card"><h1>Комната</h1>
+    <div class="code">${esc(pub.code)}</div>
+    <button class="btn" data-a="copy">📋 Скопировать ссылку для друзей</button>
+    <div class="mut" style="word-break:break-all">${esc(link)}</div></div>
+    <div class="card"><b>Игроки (${pub.players.length}/${MAXP})</b>${playersList(false)}
+    ${host ? `<label class="chk"><input type="checkbox" data-a="bonus" ${pub.bonus ? 'checked' : ''}> Попал — ходишь ещё раз</label>
+      <button class="btn pri" data-a="start" ${pub.players.length < 2 ? 'disabled' : ''}>Начать игру</button>`
+      : `<p class="mut">Ждём, пока хост начнёт игру…</p>`}</div>`;
+}
+
+function renderPlacing() {
+  const m = me();
+  const cur = placing.ships.findIndex(s => !s);
+  const all = cur < 0;
+  const tray = FLEET.map((len, i) => `<div class="sh ${placing.ships[i] ? 'done' : i === cur ? 'cur' : ''}" style="--me:${m.color}">${'<i></i>'.repeat(len)}</div>`).join('');
+  app.innerHTML = `<div class="card"><h1>Расставь корабли<small>Твой цвет: <span class="dot" style="background:${m.color}"></span> • другие не видят твою расстановку • тап по кораблю — убрать</small></h1>
+    ${m.ready ? '' : `<div class="tray">${tray}</div>`}
+    ${board('place')}
+    ${m.ready ? `<p class="mut">✅ Готов. Ждём остальных…</p>` : `
+    <div class="row" style="margin-top:10px">
+      <button class="btn" data-a="rot">Повернуть: ${placing.dir === 'h' ? '→ горизонт.' : '↓ вертик.'}</button>
+      <button class="btn" data-a="rand">🎲 Случайно</button></div>
+    <div class="row"><button class="btn" data-a="reset">Сбросить</button>
+      <button class="btn pri" data-a="ready" ${all ? '' : 'disabled'}>Готов</button></div>`}
+    </div><div class="card">${playersList(true)}</div>`;
+}
+
+function renderPlay() {
+  const m = me();
+  const myTurn = pub.phase === 'playing' && pub.turn === myId;
+  let banner;
+  if (pub.phase === 'over') banner = pub.winner == null ? 'Игра окончена' : `🏆 Победил ${esc(nameOf(pub.winner))}`;
+  else if (myTurn) banner = '🎯 Твой ход — стреляй!';
+  else banner = `Ходит <span class="dot" style="background:${colorOf(pub.turn)}"></span> ${esc(nameOf(pub.turn))}` + (m && !m.alive ? ' • ты выбыл, наблюдаешь' : '');
+  const chips = pub.players.map(p => `<div class="chip ${p.id === pub.turn && pub.phase === 'playing' ? 'turn' : ''} ${!p.alive ? 'dead' : ''}">
+    <span class="dot" style="background:${p.color}"></span>${esc(p.name)}${p.id === myId ? ' (ты)' : ''} ${p.gone ? '❌' : '⚓' + p.left}</div>`).join('');
+  const log = pub.log.slice().reverse().map(l => `<div>${esc(l)}</div>`).join('');
+  app.innerHTML = `<div class="banner ${myTurn ? 'me' : ''}">${banner}</div>
+    <div class="chips">${chips}</div>${board('play')}
+    ${pub.phase === 'over' ? (myId === 0 ? `<button class="btn pri" style="margin-top:10px" data-a="again">Играть ещё раз</button>` : `<p class="mut">Хост может начать новую игру</p>`) : ''}
+    <div class="log">${log}</div>`;
+}
+
+function render() {
+  if (screen === 'dead') { app.innerHTML = `<div class="card"><h1>Соединение потеряно</h1><p>Хост отключился или пропала сеть.</p><button class="btn pri" onclick="location.href=location.pathname">На главную</button></div>`; return; }
+  if (screen === 'home' || !pub) return renderHome();
+  if (pub.phase === 'lobby') return renderLobby();
+  if (pub.phase === 'placing') return renderPlacing();
+  renderPlay();
+}
+
+// ====== события ======
+app.addEventListener('click', e => {
+  const b = e.target.closest('[data-a]');
+  if (!b) return;
+  const a = b.dataset.a, i = Number(b.dataset.i);
+  switch (a) {
+    case 'create': createRoom(); break;
+    case 'join': joinRoom(); break;
+    case 'copy': {
+      const link = location.origin + location.pathname + '?room=' + pub.code;
+      (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject()).then(() => toast('Ссылка скопирована'), () => toast('Скопируй вручную'));
+      break;
+    }
+    case 'bonus': send({ t: 'bonus', v: b.checked }); break;
+    case 'start': send({ t: 'start' }); break;
+    case 'pcell': placeAt(i); break;
+    case 'rot': placing.dir = placing.dir === 'h' ? 'v' : 'h'; render(); break;
+    case 'rand': randomPlace(); break;
+    case 'reset': placing.ships = FLEET.map(() => null); render(); break;
+    case 'ready': send({ t: 'ready', ships: placing.ships }); break;
+    case 'shoot': send({ t: 'shoot', cell: i }); break;
+    case 'again': send({ t: 'again' }); break;
+  }
+});
+
+render();
+</script>
+</body>
+</html>
